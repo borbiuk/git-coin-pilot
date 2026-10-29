@@ -1,0 +1,99 @@
+# pilot-30m: schedule delivery pilot with a 30-minute cron (checklist item 4, ADR 0005 D1).
+#
+# Purpose
+#   Measure how many scheduled runs GitHub really starts for this cron on this account.
+#   The job only writes timestamps. It reads no price data and calls no outside service.
+#   pilot-15m.yml and pilot-30m.yml are the same pilot with other crons. Run all three.
+#
+# How to run
+#   1. Copy this file to .github/workflows/ of the throwaway PILOT repo (never into git-coin).
+#      Use the repo from README.md in this folder, and put no other scheduled workflow in it.
+#   2. Commit and push as yourself: the account that last edits the cron line gets failed-run emails.
+#   3. Leave it for 72 hours or more (a weekend is better). Do not push to the default branch meanwhile.
+#
+# What to record
+#   One CSV row per run, on the branch pilot-30m (file pilot-30m.csv): the expected cron slot, the time
+#   the job logged, the time GitHub created the run, and the run ids.
+#
+# How to read the result
+#   Fetch the three CSV files and run analyze-pilot.mjs (see README.md). It prints runs per day,
+#   the gap median, p90 and maximum, and the share of ticks delivered, and checks the ADR 0005 D1 rule.
+#   Rows with another event than "schedule" (manual runs) are ignored.
+
+name: pilot-30m
+
+on:
+    schedule:
+        - cron: '7,37 * * * *'
+    workflow_dispatch:
+
+permissions: {}
+
+jobs:
+    log:
+        # Does nothing if this file is copied into the real repository by mistake
+        if: github.repository != 'borbiuk/git-coin'
+        runs-on: ubuntu-26.04
+        timeout-minutes: 5
+        permissions:
+            contents: write
+            actions: read
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  fetch-depth: 1
+                  persist-credentials: true
+            - name: Append one row to the log branch
+              env:
+                  PILOT: pilot-30m
+                  PERIOD_MIN: '30'
+                  OFFSET_MIN: '7'
+                  EVENT: ${{ github.event_name }}
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  set -euo pipefail
+
+                  now_epoch=$(date -u +%s)
+                  logged_at=$(date -u -d "@${now_epoch}" +%Y-%m-%dT%H:%M:%SZ)
+
+                  # The last cron slot at or before now. Slots are OFFSET_MIN + n * PERIOD_MIN minutes after the hour.
+                  now_min=$((now_epoch / 60))
+                  slot_min=$((now_min - (now_min - OFFSET_MIN) % PERIOD_MIN))
+                  expected_tick=$(date -u -d "@$((slot_min * 60))" +%Y-%m-%dT%H:%MZ)
+
+                  # When GitHub created the run (best effort: the row is still written if this fails)
+                  created_at=''
+                  started_at=''
+                  if run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '[.created_at, .run_started_at] | @tsv' 2>/dev/null); then
+                      created_at=${run%%$'\t'*}
+                      started_at=${run##*$'\t'}
+                  fi
+
+                  header='workflow,event,expected_tick,logged_at,created_at,run_started_at,run_id,run_number,run_attempt'
+                  row="${PILOT},${EVENT},${expected_tick},${logged_at},${created_at},${started_at},${GITHUB_RUN_ID},${GITHUB_RUN_NUMBER},${GITHUB_RUN_ATTEMPT}"
+                  file="${PILOT}.csv"
+
+                  git config user.name 'github-actions[bot]'
+                  git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+                  for attempt in 1 2 3; do
+                      if git ls-remote --exit-code --heads origin "${PILOT}" >/dev/null; then
+                          git fetch --depth 1 origin "${PILOT}"
+                          git checkout -q -B "${PILOT}" FETCH_HEAD
+                      else
+                          git checkout -q --orphan "${PILOT}"
+                          git rm -rfq .
+                          echo "${header}" > "${file}"
+                      fi
+                      echo "${row}" >> "${file}"
+                      git add "${file}"
+                      git commit -q -m "Log ${PILOT} run ${GITHUB_RUN_NUMBER}"
+                      if git push origin "${PILOT}"; then
+                          echo "Logged: ${row}"
+                          exit 0
+                      fi
+                      echo "Push rejected (attempt ${attempt}). Trying again."
+                      sleep $((attempt * 3))
+                  done
+                  echo 'Could not push the log row after 3 attempts.' >&2
+                  exit 1
