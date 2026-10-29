@@ -1,2 +1,3 @@
 workflow,event,expected_tick,logged_at,created_at,run_started_at,run_id,run_number,run_attempt
 pilot-15m,workflow_dispatch,2026-10-29T17:33Z,2026-10-29T17:36:28Z,2026-10-29T17:36:20Z,2026-10-29T17:36:20Z,40922919879,1,1
+pilot-15m,schedule,2026-10-29T21:48Z,2026-10-29T22:00:37Z,2026-10-29T22:00:32Z,2026-10-29T22:00:32Z,40962447336,2,1
